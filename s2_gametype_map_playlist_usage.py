@@ -105,7 +105,7 @@ GROUP by 1,2,3,4,5,6
 ) 
 WHERE playlist_rank = 1'''
 
-insert_update_gametype_maps_mapping_task = qubole_operator('update_gametype_playlist_mapping',insert_update_gametype_maps_mapping_sql, 2, timedelta(seconds=600), dag) 
+##insert_update_gametype_maps_mapping_task = qubole_operator('update_gametype_playlist_mapping',insert_update_gametype_maps_mapping_sql, 2, timedelta(seconds=600), dag) 
 	
 insert_daily_gametype_maps_playlist_usage_sql = """Insert overwrite table as_s2.s2_gametype_maps_playlist_dashboard_copy 
 with first_round as
@@ -553,8 +553,8 @@ and a.playlist_id = c.playlist_id
 and a.map_name = c.map_name""" 
 ##%(stats_date, stats_date, stats_date, stats_date, stats_date) 
 
-insert_daily_gametype_map_playlist_usage_two_days_task = qubole_operator('daily_gametype_maps_playlist_usage_two_days',
-                                              evaluate_queries(insert_daily_gametype_maps_playlist_usage_sql, -1,5), 2, timedelta(seconds=600), dag) 
+##insert_daily_gametype_map_playlist_usage_two_days_task = qubole_operator('daily_gametype_maps_playlist_usage_two_days',
+##                                              evaluate_queries(insert_daily_gametype_maps_playlist_usage_sql, -1,5), 2, timedelta(seconds=600), dag) 
 insert_daily_gametype_map_playlist_usage_one_days_task = qubole_operator('daily_gametype_maps_playlist_usage_one_days',
                                              evaluate_queries(insert_daily_gametype_maps_playlist_usage_sql, 0,5), 2, timedelta(seconds=600), dag) 
 
