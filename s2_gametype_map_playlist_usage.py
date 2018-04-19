@@ -15,7 +15,7 @@ owner = "Analytic Services"
 default_args = {
     'owner': owner,
     'depends_on_past': False,
-    'start_date': datetime(2017, 12, 6),
+    'start_date': datetime(2017, 11, 3),
     'schedule_interval': '@daily'
 }
 
@@ -79,7 +79,35 @@ def evaluate_queries(query, eval_param,times_var):
     query_evaluated = query %(eval(pass_param))
     return query_evaluated
 
-insert_daily_gametype_maps_playlist_usage_sql = """Insert overwrite table as_shared.s2_gametype_maps_playlist_dashboard 
+insert_update_gametype_maps_mapping_sql = '''Insert overwrite as_s2.s2_playlist_id_to_name_mapping 
+SELECT context_headers_title_id_s, context_data_match_common_playlist_id_i, context_data_match_common_playlist_name_s, dt 
+FROM 
+(Select context_headers_title_id_s 
+, context_data_match_common_playlist_id_i 
+, context_data_match_common_playlist_name_s 
+, dt 
+, rank() over (PARTITION BY cast(dt AS Varchar), context_headers_title_id_s, cast(context_data_match_common_playlist_id_i As varchar) ORDER BY num_matches DESC) as playlist_rank 
+FROM 
+(
+select  dt 
+, context_headers_title_id_s 
+, context_data_match_common_gametype_s 
+, context_data_match_common_playlist_id_i 
+, context_data_match_common_playlist_name_s 
+, context_data_telemetry_game_version_s 
+, count (distinct context_data_match_common_matchid_s) as num_matches 
+FROM ads_ww2.fact_mp_match_data_players 
+WHERE dt between date '{{DS_DATE_ADD(-1)}}' and date '{{DS_DATE_ADD(0)}}'
+AND context_data_match_common_is_private_match_b = FALSE 
+AND context_data_match_common_playlist_id_i <> 0 
+GROUP by 1,2,3,4,5,6 
+) 
+) 
+WHERE playlist_rank = 1'''
+
+insert_update_gametype_maps_mapping_task = qubole_operator('update_gametype_playlist_mapping',insert_update_gametype_maps_mapping_sql, 2, timedelta(seconds=600), dag) 
+	
+insert_daily_gametype_maps_playlist_usage_sql = """Insert overwrite table as_s2.s2_gametype_maps_playlist_dashboard_copy 
 with first_round as
 (
   select distinct  a.context_headers_title_id_s 
@@ -210,16 +238,16 @@ select dt as raw_date
 
 -- Create a separate playlist Id mapping for PC 
 
-, case when context_data_match_common_playlist_id_i = 2 then 'War'
-        else cast(context_data_match_common_playlist_id_i as varchar) 
-     end as playlist_id 
+, b.playlist_name as playlist_id 
 		
 -- Map Descriptions and their Screen Names 
 
     ,case when match_common_map_s = 'mp_raid_cobra' then 'Operation Breakout' 
           when match_common_map_s = 'mp_raid_bulge' then 'Operation Griffin' 	
           when match_common_map_s = 'mp_raid_aachen' then 'Operation Aachen' 	
-          when match_common_map_s = 'mp_raid_d_day' then 'Operation Neptune' 	  
+          when match_common_map_s = 'mp_raid_d_day' then 'Operation Neptune' 
+		  when match_common_map_s = 'mp_raid_dlc2' then 'Operation Husky'
+		  
 	      else match_common_map_s 
 	end as map_name 
 
@@ -227,7 +255,10 @@ select dt as raw_date
 	,count(distinct case when disconnect_reason_s like 'EXE_DISCONNECTED%%' then context_data_players_client_user_id_l end) as early_quits -- Voluntary Quits 
 	,count(distinct case when disconnect_reason_s like 'EXE_DISCONNECTED%%' or disconnect_reason_s in ('EXE_MATCHENDED')  then context_data_players_client_user_id_l end) as all_quits 
 	, count(distinct context_data_players_client_user_id_l) as users 
-	from player_mp 
+	from player_mp a 
+	left join as_s2.s2_playlist_id_to_name_mapping b 
+	ON a.dt = b.dt 
+	AND a.context_data_match_common_playlist_id_i = b.playlist_id 
 	group by 1,2,3,4,5,6,7
 ) 
 group by 1,2,3,4,5 
@@ -275,6 +306,7 @@ select case when a.title_id in ('5599') then 'PS4'
              when a.map_description = 'mp_raid_bulge' then 'Operation Griffin' 	
              when a.map_description = 'mp_raid_aachen' then 'Operation Aachen' 	
              when a.map_description = 'mp_raid_d_day' then 'Operation Neptune' 
+			 when a.map_description = 'mp_raid_dlc2' then 'Operation Husky'
 			 else a.map_description 
        end as map_name
 , a.raw_date 
@@ -382,31 +414,12 @@ Select d.monday_date
 
 -- Create a separate playlist Id mapping for PC 
 
-, case when playlist_id = 1 then 'Team Deathmatch'
-        when playlist_id = 2 then 'War'
-        when playlist_id = 3 then 'Domination'
-        when playlist_id = 4 then 'Search and Destroy'
-        when playlist_id = 5 then 'Kill Confirmed'
-		when playlist_id = 6 then 'Gridiron' 
-		when playlist_id = 7 then 'Free-for-all' 
-		when playlist_id = 8 then 'Hardpoint' 
-		when playlist_id = 9 then 'Capture the Flag' 
-		when playlist_id = 18 then 'Team Deathmatch Hardcore' 
-		when playlist_id = 19 then 'Domination  Hardcore' 
-		when playlist_id = 22 then 'Free-for-all Hardcore'
-		when playlist_id = 30 then 'Team Deathmatch Hardcore' 
+, case  when playlist_id = 30 then 'Team Deathmatch Hardcore' 
 		when playlist_id = 31 then 'Search and Destroy Hardcore' 
 		when playlist_id = 32 then 'Domination Hardcore' 
 		when playlist_id = 33 then 'Free-for-all Hardcore' 
-		when playlist_id = 40 then 'Carentan 24/7' 
-		when playlist_id = 62 then 'Comp Hardpoint' 
-		when playlist_id = 63 then 'Comp Capture The Flag' 
-		when playlist_id = 64 then 'Comp Search and Destroy'
 		when playlist_id = 34 then 'Kill Confirmed Hardcore'
-		when playlist_id = 17 then 'Winter Carentan Hardcore'
-		when playlist_id = 28 then 'Gun Game'
-		when playlist_id = 35 then 'Mosh Pit'
-        else cast(playlist_id as varchar) 
+		else c.playlist_name  
      end as playlist_id 
 		
 -- Map Descriptions and their Screen Names 
@@ -429,6 +442,12 @@ Select d.monday_date
           when a.map_description = 'mp_raid_aachen' then 'Operation Aachen' 	
           when a.map_description = 'mp_raid_d_day' then 'Operation Neptune' 	
 		  when a.map_description = 'mp_carentan_s2_winter' then 'Winter Carentan' 	
+		  
+		  -- DLC2 Maps 
+		  
+		  when a.map_description = 'mp_egypt_02' then 'Egypt'
+		  when a.map_description = 'mp_dunkirk' then 'Dunkirk' 
+		  when a.map_description = 'mp_v2_rocket_02' then 'V2' 
 	      else a.map_description 
 	end as map_name 
 
@@ -507,7 +526,10 @@ Select d.monday_date
 		on a.match_id = b.context_data_match_common_matchid_s 
 		and a.title_id = b.title_id 
 		and a.map_description = b.map_description
-		
+		left join as_s2.s2_playlist_id_to_name_mapping c 
+		ON a.dt = c.dt 
+		AND a.title_id = c.title_id 
+		AND a.playlist_id = c.playlist_id 
         group by 1,2,3,4,5,6,7 
 		
 		) a
@@ -536,7 +558,8 @@ insert_daily_gametype_map_playlist_usage_two_days_task = qubole_operator('daily_
 insert_daily_gametype_map_playlist_usage_one_days_task = qubole_operator('daily_gametype_maps_playlist_usage_one_days',
                                              evaluate_queries(insert_daily_gametype_maps_playlist_usage_sql, 0,5), 2, timedelta(seconds=600), dag) 
 
-# Wire up the DAG , Setting Dependency of the tasks
-insert_daily_gametype_map_playlist_usage_two_days_task.set_upstream(start_time_task)
-insert_daily_gametype_map_playlist_usage_one_days_task.set_upstream(insert_daily_gametype_map_playlist_usage_two_days_task)
+# Wire up the DAG , Setting Dependency of the tasks 
+#insert_update_gametype_maps_mapping_task.set_upstream(start_time_task)
+#insert_daily_gametype_map_playlist_usage_two_days_task.set_upstream(start_time_task)
+insert_daily_gametype_map_playlist_usage_one_days_task.set_upstream(start_time_task)
 
