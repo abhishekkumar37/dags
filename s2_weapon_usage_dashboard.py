@@ -15,23 +15,23 @@ owner = "Analytic Services"
 default_args = {
     'owner': owner,
     'depends_on_past': False,
-    'start_date': datetime(2017, 12, 06),
+    'start_date': datetime(2017, 11, 3),
     'schedule_interval': '@daily'
 }
 
-dag = airflow.DAG(dag_id='s2_weapon_usage_dashboard',
+dag = airflow.DAG(dag_id='WWII_GameType_Maps_and_Playlist_Usage',
                   default_args=default_args
                   )
 
 # Start running at this time
-start_time_task = TimeSensor(target_time=time(5, 30),
+start_time_task = TimeSensor(target_time=time(6, 00),
                              task_id='start_time_task',
                              dag=dag
                              )
 
 current_date = (datetime.now()).date()
-stats_date = current_date - timedelta(days=2)
-stats_date2 = current_date - timedelta(days=1)
+stats_date2 = current_date - timedelta(days=2)
+stats_date = current_date - timedelta(days=1)
 
 def qubole_operator(task_id, sql, retries, retry_delay, dag):
     return PythonOperator(
@@ -41,7 +41,7 @@ def qubole_operator(task_id, sql, retries, retry_delay, dag):
         retries=retries,
         retry_delay=retry_delay,
         # schedule_interval=None,
-        pool='presto_default_pool',
+        pool='hive_default_pool',
         op_kwargs={'db_type': query_type,
                    'raw_sql': sql,
                    'expected_runtime': expected_runtime,
@@ -68,1125 +68,498 @@ def export_to_rdms_operator(task_id, table_name, retries, retry_delay, dag):
         templates_dict=None,
         dag=dag)
 
+## Define function to pass different parameter for string evaluations 
 
-insert_daily_weapons_usage_sql = """ Insert overwrite table as_shared.s2_weapon_usage_dashboard 
-with temp_match as 
-(select distinct context_headers_title_id_s, context_data_match_common_matchid_s, match_common_map_s, match_common_gametype_s, 
-	context_headers_event_id_s, match_common_utc_start_time_i, match_common_life_count_i,
-	match_common_player_count_i, match_common_has_bots_b 
-	FROM ads_ww2.fact_mp_match_data
-	WHERE dt =  date '{{DS_DATE_ADD(-1)}}'
-	AND context_data_match_common_matchid_s IS NOT NULL
-	AND match_common_is_private_match_b = FALSE 
-	AND context_headers_title_id_s in ('5597', '5598','5599')
-	AND match_common_gametype_s in ('war', 'dom', 'raid', 'war hc', 'dom hc')
-),
+def evaluate_queries(query, eval_param,times_var):
+    times_var = times_var + 1
+    pass_param = []
+    for i in range(1,times_var):
+        pass_param.append('eval_param')
+    pass_param = ','.join(str(x) for x in pass_param)
+    query_evaluated = query %(eval(pass_param))
+    return query_evaluated
 
-
-player_match as 
+insert_update_gametype_maps_mapping_sql = '''Insert overwrite as_s2.s2_playlist_id_to_name_mapping 
+SELECT context_headers_title_id_s, context_data_match_common_playlist_id_i, context_data_match_common_playlist_name_s, dt 
+FROM 
+(Select context_headers_title_id_s 
+, context_data_match_common_playlist_id_i 
+, context_data_match_common_playlist_name_s 
+, dt 
+, rank() over (PARTITION BY cast(dt AS Varchar), context_headers_title_id_s, cast(context_data_match_common_playlist_id_i As varchar) ORDER BY num_matches DESC) as playlist_rank 
+FROM 
 (
-select distinct context_headers_title_id_s, context_data_match_common_matchid_s, context_data_players_index, client_gamer_tag_s, context_data_players_client_user_id_l, start_rank_i, start_prestige_i 
-from ads_ww2.fact_mp_match_data_players 
-where dt = date '{{DS_DATE_ADD(-1)}}'
-and context_data_match_common_matchid_s in (select context_data_match_common_matchid_s from temp_match)
-),
-
-loot_table as 
-(
-select name, reference, description, rarity, productionlevel, category, rarity_s, loot_id, loot_group , weapon_name as weapon_base 
-from as_s2.loot_v5_ext a 
-where upper(category) = 'WEAPON'
-group by 1,2,3,4,5,6,7,8,9,10
-),
-
-
-weapon_usage as 
- (
-  select dt as raw_date 
-
- , case when title_id in ('5598') then 'XBOX'
-
-		when title_id in ('5599') then 'PS4' 
-
-		when title_id in ('5597') then 'PC' end as platform
-
-		, regexp_replace(weapon_base, '_mp', '') as weapon_base
-
-		, weapon_class 
-
-		, game_type
-
-		, rank 
-
-		, prestige 
-
-		, sum(kills) as kills
-
-		, sum(deaths) as deaths
-
-		, sum(duration)/60.0 as duration
-
-		, count(*) as times_used 
-
-		
-
-FROM  
-
- (
-select distinct a.context_headers_title_id_s as title_id
-        , a.dt 
-        , a.context_data_match_common_matchid_s as match_id
-        , a.loadout_index_i as loadoutid 
-        , a.weapon_guid_l 
-        , d.loot_group as weapon_class
-        , d.reference as weapon_description 
-        , d.weapon_base 
-        , b.match_common_gametype_s game_type 
-        , c.client_gamer_tag_s as gamer_tag
-        , c.start_rank_i as rank
-        , c.start_prestige_i as prestige
-        , a.kills_i as kills
-        , a.deaths_i as deaths 
-        , a.time_in_use_seconds_i as duration 
-        , a.context_data_players_score_i as score
-        , b.match_common_map_s as map_description
-    from ads_ww2.fact_mp_match_data_players_weaponstats a 
-    join temp_match b 
-    on a.context_data_match_common_matchid_s = b.context_data_match_common_matchid_s 
-    join player_match c 
-    on a.context_data_match_common_matchid_s = c.context_data_match_common_matchid_s 
-    and a.context_data_players_index = c.context_data_players_index 
-    join loot_table d 
-    on a.weapon_guid_l = d.loot_id 
-    where a.dt = date '{{DS_DATE_ADD(-1)}}'
-    and a.time_in_use_seconds_i > 0 
-    ) 
-group by 1,2,3,4,5,6,7
-),
-
-cross_table as 
-(
-select * 
-FROM (select distinct rank from weapon_usage where rank <= 54) c1
-CROSS JOIN (select distinct game_type from weapon_usage) c2 
-CROSS JOIN (select distinct platform from weapon_usage) c3
-CROSS JOIN (SELECT distinct raw_date, weapon_base, weapon_class from weapon_usage) c4 
-CROSS JOIN (select distinct prestige from weapon_usage where prestige between 0 and 11) c5
-)
-
-
-select d.monday_date as week_start_dt 
-, c.game_type 
-, c.platform 
-, regexp_replace(c.weapon_base , '_mp', '') as weapon_base
-, c.weapon_class 
-, c.rank 
-, c.prestige 
-, coalesce(a.kills,0) as kills_equipped 
-, coalesce(a.deaths,0) as deaths_equipped 
-, coalesce(a.duration,0) as duration_equipped 
-, coalesce(a.times_used,0) as times_used_equipped
-, coalesce(b.kills,0) as kills_loadout
-, coalesce(b.deaths,0) as deaths_loadout 
-, coalesce(b.duration,0) as duration_loadout 
-, coalesce(b.times_used,0) as times_used_loadout 
-, sum(coalesce(a.kills,0)) over (partition by c.raw_date , c.game_type , c.platform , c.rank, c.prestige) as kills_total_weapon_name
-, sum(coalesce(a.duration,0)) over (partition by c.raw_date , c.game_type , c.platform , c.rank, c.prestige) as duration_total_weapon_name 
-, sum(coalesce(b.duration,0)) over (partition by c.raw_date , c.game_type , c.platform , c.rank, c.prestige) as duration_loadout_total_weapon_name 
-, count(c.weapon_base) over (partition by c.raw_date , c.game_type , c.platform , c.rank, c.prestige, c.weapon_class) as total_num_weapon_base 
-, c.raw_date 
-from cross_table c
-left join 
-
-(
-select raw_date 
-, game_type 
-, case when title_id in ('5598') then 'XBOX' 
-            when title_id in ('5599') then 'PS4' 
-			when title_id in ('5597') then 'PC' end as platform 
-, regexp_replace(weapon_base , '_mp', '') as weapon_base 
-, weapon_class
-, rank
-, prestige
-, sum(kills) as kills 
-, sum(deaths) as deaths 
-, sum(score) as score 
-, sum(duration)/60.0 as duration 
-, sum(times_used) as times_used  
-
-from 
-
-
-(
-(
-select distinct b.context_headers_title_id_s as title_id 
-, b.match_common_map_s as map_description 
-, b.match_common_gametype_s as game_type 
-, a.victim_weapon_s as weapon_name
-, a.attacker_weapon_s as attacker_weapon
-, d.loot_group as weapon_class 
-, d.weapon_base 
-, c.start_rank_i as rank 
-, c.start_prestige_i as prestige 
-, c.client_gamer_tag_s as gamer_tag
-, a.context_headers_event_id_s 
-, a.context_data_match_common_matchid_s
-, a.player_index_i 
-, a.attacker_i 
-, a.spawn_time_ms_i 
-, a.duration_ms_i 
-, a.score_earned_i as score 
-, (a.death_time_ms_i - a.spawn_time_ms_i)/1000.0 as duration 
-, b.match_common_utc_start_time_i 
-, 0 as kills 
-, 1 as deaths 
-, 1 as times_used 
-, a.dt as raw_date 
-from ads_ww2.fact_mp_match_data_lives a 
-
-join temp_match b 
-	
-on a.context_headers_event_id_s = b.context_headers_event_id_s 
-and a.context_data_match_common_matchid_s = b.context_data_match_common_matchid_s 
-
-join player_match c 
-
-on a.context_data_match_common_matchid_s = c.context_data_match_common_matchid_s
-and a.player_index_i = c.context_data_players_index
-
-left join loot_table d -- Weapon Description Mapping 
-on a.victim_weapon_guid_l = d.loot_id
-
--- Lives Data Filters 
-where a.dt = date '{{DS_DATE_ADD(-1)}}'
-and a.duration_ms_i > 0 
---and (a.spawn_pos_ai[1] > 0 or a.spawn_pos_ai[2] > 0 or a.spawn_pos_ai[3] > 0) 
-and a.means_of_death_s <> 'none' 
-and a.victim_weapon_s <> 'none' 
-
-
+select  dt 
+, context_headers_title_id_s 
+, context_data_match_common_gametype_s 
+, context_data_match_common_playlist_id_i 
+, context_data_match_common_playlist_name_s 
+, context_data_telemetry_game_version_s 
+, count (distinct context_data_match_common_matchid_s) as num_matches 
+FROM ads_ww2.fact_mp_match_data_players 
+WHERE dt between date '{{DS_DATE_ADD(-1)}}' and date '{{DS_DATE_ADD(0)}}'
+AND context_data_match_common_is_private_match_b = FALSE 
+AND context_data_match_common_playlist_id_i <> 0 
+GROUP by 1,2,3,4,5,6 
 ) 
-
-union all
-
-
-( 
-select distinct b.context_headers_title_id_s as title_id 
-, b.match_common_map_s as map_description 
-, b.match_common_gametype_s as game_type 
-, a.attacker_weapon_s as weapon_name
-, a.victim_weapon_s as victim_weapon
-, d.loot_group as weapon_class 
-, d.weapon_base 
-, c.start_rank_i as rank 
-, c.start_prestige_i as prestige 
-, c.client_gamer_tag_s as gamer_tag
-, a.context_headers_event_id_s 
-, a.context_data_match_common_matchid_s
-, a.player_index_i 
-, a.attacker_i 
-, a.spawn_time_ms_i 
-, a.duration_ms_i 
-, 0 as score 
-, 0.0 as duration 
-, b.match_common_utc_start_time_i 
-, 1 as kills 
-, 0 as deaths 
-, 0 as times_used 
-, a.dt as raw_date 
-from ads_ww2.fact_mp_match_data_lives a 
-
-join temp_match b 
-	
-on a.context_headers_event_id_s = b.context_headers_event_id_s 
-and a.context_data_match_common_matchid_s = b.context_data_match_common_matchid_s 
-
-join player_match c 
-
-on a.context_data_match_common_matchid_s = c.context_data_match_common_matchid_s
-and a.attacker_i = c.context_data_players_index
-
-left join loot_table d -- Weapon Description Mapping Table 
-on a.attacker_weapon_guid_l = d.loot_id
-
--- Lives Data Filters 
-where a.dt = date '{{DS_DATE_ADD(-1)}}'
-and a.duration_ms_i > 0 
---and (a.spawn_pos_ai[1] > 0 or a.spawn_pos_ai[2] > 0 or a.spawn_pos_ai[3] > 0) 
-and a.means_of_death_s <> 'none' 
-and a.attacker_weapon_s <> 'none' 
-
-)  
-)
-group by 1,2,3,4,5,6,7
-) a 
-on c.raw_date = a.raw_date 
-and c.game_type = a.game_type 
-and c.platform = a.platform 
-and c.weapon_base = a.weapon_base 
-and c.weapon_class = a.weapon_class 
-and c.rank = a.rank 
-and c.prestige = a.prestige 
-
-left join weapon_usage b 
-
-on c.raw_date = b.raw_date 
-and c.game_type = b.game_type 
-and c.platform = b.platform 
-and c.weapon_base = b.weapon_base 
-and c.weapon_class = b.weapon_class 
-and c.rank = b.rank 
-and c.prestige = b.prestige 
-
-left join as_shared.dim_date_id_date_monday_dev d 
-on c.raw_date = d.raw_date
---),"""
-
-insert_daily_weapons_usage_task = qubole_operator('insert_daily_weapons_usage',
-                                              insert_daily_weapons_usage_sql, 2, timedelta(seconds=600), dag)
-
-insert_daily_weapons_usage_a_day_back_sql = """ Insert overwrite table as_shared.s2_weapon_usage_dashboard 
-with temp_match as 
-(select distinct context_headers_title_id_s, context_data_match_common_matchid_s, match_common_map_s, match_common_gametype_s, 
-	context_headers_event_id_s, match_common_utc_start_time_i, match_common_life_count_i,
-	match_common_player_count_i, match_common_has_bots_b 
-	FROM ads_ww2.fact_mp_match_data
-	WHERE dt = date '{{DS_DATE_ADD(0)}}'
-	AND context_data_match_common_matchid_s IS NOT NULL
-	AND match_common_is_private_match_b = FALSE 
-	AND context_headers_title_id_s in ('5597', '5598','5599')
-	AND match_common_gametype_s in ('war', 'dom', 'raid', 'war hc', 'dom hc')
-),
-
-
-player_match as 
-(
-select distinct context_headers_title_id_s, context_data_match_common_matchid_s, context_data_players_index, client_gamer_tag_s, context_data_players_client_user_id_l, start_rank_i, start_prestige_i 
-from ads_ww2.fact_mp_match_data_players 
-where dt = date '{{DS_DATE_ADD(0)}}'
-and context_data_match_common_matchid_s in (select context_data_match_common_matchid_s from temp_match)
-),
-
-loot_table as 
-(
-select name, reference, description, rarity, productionlevel, category, rarity_s, loot_id, loot_group , weapon_name as weapon_base 
-from as_s2.loot_v5_ext a 
-where upper(category) = 'WEAPON'
-group by 1,2,3,4,5,6,7,8,9,10
-),
-
-
-weapon_usage as 
- (
-  select dt as raw_date 
-
- , case when title_id in ('5598') then 'XBOX'
-
-		when title_id in ('5599') then 'PS4' 
-
-		when title_id in ('5597') then 'PC' end as platform
-
-		, regexp_replace(weapon_base, '_mp', '') as weapon_base
-
-		, weapon_class 
-
-		, game_type
-
-		, rank 
-
-		, prestige 
-
-		, sum(kills) as kills
-
-		, sum(deaths) as deaths
-
-		, sum(duration)/60.0 as duration
-
-		, count(*) as times_used 
-
-		
-
-FROM  
-
- (
-select distinct a.context_headers_title_id_s as title_id
-        , a.dt 
-        , a.context_data_match_common_matchid_s as match_id
-        , a.loadout_index_i as loadoutid 
-        , a.weapon_guid_l 
-        , d.loot_group as weapon_class
-        , d.reference as weapon_description 
-        , d.weapon_base 
-        , b.match_common_gametype_s game_type 
-        , c.client_gamer_tag_s as gamer_tag
-        , c.start_rank_i as rank
-        , c.start_prestige_i as prestige
-        , a.kills_i as kills
-        , a.deaths_i as deaths 
-        , a.time_in_use_seconds_i as duration 
-        , a.context_data_players_score_i as score
-        , b.match_common_map_s as map_description
-    from ads_ww2.fact_mp_match_data_players_weaponstats a 
-    join temp_match b 
-    on a.context_data_match_common_matchid_s = b.context_data_match_common_matchid_s 
-    join player_match c 
-    on a.context_data_match_common_matchid_s = c.context_data_match_common_matchid_s 
-    and a.context_data_players_index = c.context_data_players_index 
-    join loot_table d 
-    on a.weapon_guid_l = d.loot_id 
-    where a.dt = date '{{DS_DATE_ADD(0)}}'
-    and a.time_in_use_seconds_i > 0 
-    ) 
-group by 1,2,3,4,5,6,7
-),
-
-cross_table as 
-(
-select * 
-FROM (select distinct rank from weapon_usage where rank <= 54) c1
-CROSS JOIN (select distinct game_type from weapon_usage) c2 
-CROSS JOIN (select distinct platform from weapon_usage) c3
-CROSS JOIN (SELECT distinct raw_date, weapon_base, weapon_class from weapon_usage) c4 
-CROSS JOIN (select distinct prestige from weapon_usage where prestige between 0 and 11) c5
-)
-
-
-select d.monday_date as week_start_dt 
-, c.game_type 
-, c.platform 
-, regexp_replace(c.weapon_base , '_mp', '') as weapon_base
-, c.weapon_class 
-, c.rank 
-, c.prestige 
-, coalesce(a.kills,0) as kills_equipped 
-, coalesce(a.deaths,0) as deaths_equipped 
-, coalesce(a.duration,0) as duration_equipped 
-, coalesce(a.times_used,0) as times_used_equipped
-, coalesce(b.kills,0) as kills_loadout
-, coalesce(b.deaths,0) as deaths_loadout 
-, coalesce(b.duration,0) as duration_loadout 
-, coalesce(b.times_used,0) as times_used_loadout 
-, sum(coalesce(a.kills,0)) over (partition by c.raw_date , c.game_type , c.platform , c.rank, c.prestige) as kills_total_weapon_name
-, sum(coalesce(a.duration,0)) over (partition by c.raw_date , c.game_type , c.platform , c.rank, c.prestige) as duration_total_weapon_name 
-, sum(coalesce(b.duration,0)) over (partition by c.raw_date , c.game_type , c.platform , c.rank, c.prestige) as duration_loadout_total_weapon_name 
-, count(c.weapon_base) over (partition by c.raw_date , c.game_type , c.platform , c.rank, c.prestige, c.weapon_class) as total_num_weapon_base 
-, c.raw_date 
-from cross_table c
-left join 
-
-(
-select raw_date 
-, game_type 
-, case when title_id in ('5598') then 'XBOX' 
-            when title_id in ('5599') then 'PS4' 
-			when title_id in ('5597') then 'PC' end as platform 
-, regexp_replace(weapon_base , '_mp', '') as weapon_base 
-, weapon_class
-, rank
-, prestige
-, sum(kills) as kills 
-, sum(deaths) as deaths 
-, sum(score) as score 
-, sum(duration)/60.0 as duration 
-, sum(times_used) as times_used  
-
-from 
-
-
-(
-(
-select distinct b.context_headers_title_id_s as title_id 
-, b.match_common_map_s as map_description 
-, b.match_common_gametype_s as game_type 
-, a.victim_weapon_s as weapon_name
-, a.attacker_weapon_s as attacker_weapon
-, d.loot_group as weapon_class 
-, d.weapon_base 
-, c.start_rank_i as rank 
-, c.start_prestige_i as prestige 
-, c.client_gamer_tag_s as gamer_tag
-, a.context_headers_event_id_s 
-, a.context_data_match_common_matchid_s
-, a.player_index_i 
-, a.attacker_i 
-, a.spawn_time_ms_i 
-, a.duration_ms_i 
-, a.score_earned_i as score 
-, (a.death_time_ms_i - a.spawn_time_ms_i)/1000.0 as duration 
-, b.match_common_utc_start_time_i 
-, 0 as kills 
-, 1 as deaths 
-, 1 as times_used 
-, a.dt as raw_date 
-from ads_ww2.fact_mp_match_data_lives a 
-
-join temp_match b 
-	
-on a.context_headers_event_id_s = b.context_headers_event_id_s 
-and a.context_data_match_common_matchid_s = b.context_data_match_common_matchid_s 
-
-join player_match c 
-
-on a.context_data_match_common_matchid_s = c.context_data_match_common_matchid_s
-and a.player_index_i = c.context_data_players_index
-
-left join loot_table d -- Weapon Description Mapping 
-on a.victim_weapon_guid_l = d.loot_id
-
--- Lives Data Filters 
-where a.dt = date '{{DS_DATE_ADD(0)}}'
-and a.duration_ms_i > 0 
---and (a.spawn_pos_ai[1] > 0 or a.spawn_pos_ai[2] > 0 or a.spawn_pos_ai[3] > 0) 
-and a.means_of_death_s <> 'none' 
-and a.victim_weapon_s <> 'none' 
-
-
 ) 
+WHERE playlist_rank = 1'''
 
-union all
-
-
-( 
-select distinct b.context_headers_title_id_s as title_id 
-, b.match_common_map_s as map_description 
-, b.match_common_gametype_s as game_type 
-, a.attacker_weapon_s as weapon_name
-, a.victim_weapon_s as victim_weapon
-, d.loot_group as weapon_class 
-, d.weapon_base 
-, c.start_rank_i as rank 
-, c.start_prestige_i as prestige 
-, c.client_gamer_tag_s as gamer_tag
-, a.context_headers_event_id_s 
-, a.context_data_match_common_matchid_s
-, a.player_index_i 
-, a.attacker_i 
-, a.spawn_time_ms_i 
-, a.duration_ms_i 
-, 0 as score 
-, 0.0 as duration 
-, b.match_common_utc_start_time_i 
-, 1 as kills 
-, 0 as deaths 
-, 0 as times_used 
-, a.dt as raw_date 
-from ads_ww2.fact_mp_match_data_lives a 
-
-join temp_match b 
+insert_update_gametype_maps_mapping_task = qubole_operator('update_gametype_playlist_mapping',insert_update_gametype_maps_mapping_sql, 2, timedelta(seconds=600), dag) 
 	
-on a.context_headers_event_id_s = b.context_headers_event_id_s 
-and a.context_data_match_common_matchid_s = b.context_data_match_common_matchid_s 
-
-join player_match c 
-
-on a.context_data_match_common_matchid_s = c.context_data_match_common_matchid_s
-and a.attacker_i = c.context_data_players_index
-
-left join loot_table d -- Weapon Description Mapping Table 
-on a.attacker_weapon_guid_l = d.loot_id
-
--- Lives Data Filters 
-where a.dt = date '{{DS_DATE_ADD(0)}}'
-and a.duration_ms_i > 0 
---and (a.spawn_pos_ai[1] > 0 or a.spawn_pos_ai[2] > 0 or a.spawn_pos_ai[3] > 0) 
-and a.means_of_death_s <> 'none' 
-and a.attacker_weapon_s <> 'none' 
-
-)  
-)
-group by 1,2,3,4,5,6,7
-) a 
-on c.raw_date = a.raw_date 
-and c.game_type = a.game_type 
-and c.platform = a.platform 
-and c.weapon_base = a.weapon_base 
-and c.weapon_class = a.weapon_class 
-and c.rank = a.rank 
-and c.prestige = a.prestige 
-
-left join weapon_usage b 
-
-on c.raw_date = b.raw_date 
-and c.game_type = b.game_type 
-and c.platform = b.platform 
-and c.weapon_base = b.weapon_base 
-and c.weapon_class = b.weapon_class 
-and c.rank = b.rank 
-and c.prestige = b.prestige 
-
-left join as_shared.dim_date_id_date_monday_dev d 
-on c.raw_date = d.raw_date
---),""" 
-
-insert_daily_weapons_usage_a_day_back_task = qubole_operator('insert_daily_weapons_usage_a_day_back',
-                                              insert_daily_weapons_usage_a_day_back_sql, 2, timedelta(seconds=600), dag)
-
-insert_weapon_usage_ranked_play_start_mmr_sql = '''
-INSERT overwrite TABLE as_shared.s2_weapon_usage_dashboard_start_mmr_ranked_play
-
-with temp_match as 
-(   
-    SELECT DISTINCT context_headers_title_id_s, context_data_match_common_matchid_s, match_common_map_s, match_common_gametype_s, 
-	context_headers_event_id_s, match_common_utc_start_time_i, match_common_life_count_i,
-	match_common_player_count_i, match_common_has_bots_b 
-	FROM ads_ww2.fact_mp_match_data
-	WHERE dt =  date '{{DS_DATE_ADD(0)}}'
-	AND context_data_match_common_matchid_s IS NOT NULL
-	AND match_common_is_private_match_b = FALSE 
-	AND context_headers_title_id_s in ('5597', '5598','5599')
-	and match_common_is_ranked_mode_b= true -- Restricting data for Ranked Play 
-),
-
-
-player_match as 
+insert_daily_gametype_maps_playlist_usage_sql = """Insert overwrite table as_s2.s2_gametype_maps_playlist_dashboard_copy 
+with first_round as
 (
-SELECT DISTINCT context_headers_title_id_s, context_data_match_common_matchid_s, context_data_players_index, client_gamer_tag_s, context_data_players_client_user_id_l, 
-
-  CASE
-    WHEN end_mmr_current_f < -2.0 THEN 'Bronze'
-    WHEN end_mmr_current_f < 0.0 THEN 'Silver'
-    WHEN end_mmr_current_f < 2.0 THEN 'Gold'
-    WHEN end_mmr_current_f < 4.0 THEN 'Platinum'
-    WHEN end_mmr_current_f < 6.0 THEN 'Diamond'
-    ELSE 'Master' END AS mmr_tier
-, start_prestige_i 
-from ads_ww2.fact_mp_match_data_players 
-where dt = date '{{DS_DATE_ADD(0)}}'
-and context_data_match_common_matchid_s in (SELECT context_data_match_common_matchid_s from temp_match)
+  select distinct  a.context_headers_title_id_s 
+  ,a.match_common_gametype_s 
+  , a.match_common_map_s 
+  , a.context_data_match_common_playlist_id_i 
+  , a.context_data_match_common_matchid_s 
+  , a.axisgamemodedata_ai 
+  , a.axisobj_i 
+  , a.match_common_utc_start_time_i 
+  , a.match_common_utc_end_time_i
+  , a.matchduration 
+  , case when a.alliesgamemodedata_ai[1] > 0 then alliesgamemodedata_ai else a.axisgamemodedata_ai end as first_round_data 
+  , case when alliesgamemodedata_ai[1] > 0 then alliesobj_i else axisobj_i end as first_round_obj 
+  , a.dt 
+ from ads_ww2.fact_mp_match_data a 
+  where a.dt = date '{{DS_DATE_ADD(%s)}}' 
+  and a.match_common_gametype_s in ('raid' , 'raid hc') 
+  and a.match_common_previous_match_id_s = ''
+  and a.context_data_match_common_playlist_id_i <> 0
 ),
 
-loot_TABLE as 
+second_round as 
 (
-SELECT name, reference, description, rarity, productionlevel, category, rarity_s, loot_id, loot_group , weapon_name as weapon_base 
-from as_s2.loot_v5_ext a 
-where upper(category) = 'WEAPON'
-group by 1,2,3,4,5,6,7,8,9,10
+  select distinct  a.context_headers_title_id_s 
+  ,a.match_common_gametype_s 
+  , a.match_common_map_s 
+  , a.context_data_match_common_playlist_id_i 
+  , a.context_data_match_common_matchid_s 
+  , a.axisgamemodedata_ai 
+  , a.axisobj_i 
+  , a.match_common_utc_start_time_i 
+  , a.match_common_utc_end_time_i
+  , a.matchduration 
+  , a.match_common_previous_match_id_s 
+  , case when a.alliesgamemodedata_ai[1] > 0 then alliesgamemodedata_ai else a.axisgamemodedata_ai end as second_round_data 
+  , case when alliesgamemodedata_ai[1] > 0 then alliesobj_i else axisobj_i end as second_round_obj 
+  , a.dt 
+ from ads_ww2.fact_mp_match_data a 
+  where a.dt = date '{{DS_DATE_ADD(%s)}}' 
+  and a.match_common_gametype_s in ('raid' , 'raid hc') 
+  and a.match_common_previous_match_id_s <> ''
+  and a.context_data_match_common_playlist_id_i <> 0
+),
+
+first_round_players AS
+(
+  select distinct a.*, b.context_data_players_client_user_id_l, b.disconnect_reason_s
+  from first_round a join  ads_ww2.fact_mp_match_data_players b
+  on a.context_data_match_common_matchid_s = b.context_data_match_common_matchid_s 
+  where b.utc_connect_time_s_i <> 0 
+),
+
+second_round_players AS
+(
+  select distinct a.*, b.context_data_players_client_user_id_l, b.disconnect_reason_s
+  from second_round a join ads_ww2.fact_mp_match_data_players b
+  on a.context_data_match_common_matchid_s = b.context_data_match_common_matchid_s 
+  where b.utc_connect_time_s_i <> 0
+), 
+
+temp1 as 
+(select distinct a.context_headers_title_id_s, a.context_data_match_common_matchid_s as allies_match, a.first_round_data 
+, a.first_round_obj, a.matchduration as allies_matchduration, a.match_common_utc_end_time_i, a.match_common_gametype_s 
+, a.match_common_map_s , a.context_data_match_common_playlist_id_i
+, b.match_common_utc_start_time_i, b.context_data_match_common_matchid_s as axis_match, b.second_round_data, b.second_round_obj 
+, b.matchduration as axis_matchduration, a.dt 
+from first_round a join second_round b 
+on a.dt = b.dt 
+and a.context_headers_title_id_s =  b.context_headers_title_id_s
+--and a.match_common_utc_end_time_i >= b.match_common_utc_start_time_i - 60 
+--and a.match_common_utc_end_time_i <= b.match_common_utc_start_time_i
+--and a.context_headers_user_id_s = b.context_headers_user_id_s 
+ and a.context_data_match_common_matchid_s = b.match_common_previous_match_id_s
+and a.match_common_gametype_s = b.match_common_gametype_s 
+and a.match_common_map_s = b.match_common_map_s
+),
+
+temp2 as
+(
+select *, count(*) over(partition by allies_match) as allies_N, count(*) over(partition by axis_match) as axis_N from temp1
+),
+
+war_tab AS
+(
+	select *, concat(cast (allies_match as varchar), cast(axis_match as varchar)) as concat_matchid,  (allies_matchduration + axis_matchduration) as matchduration  from temp2
+    where allies_N = 1 and axis_N = 1
 ),
 
 
-weapon_usage as 
- (
-  SELECT dt as raw_date 
+player_mp AS 
+(
+  select distinct e.* 
+  from (select a.*, b.context_data_players_client_user_id_l, b.disconnect_reason_s
+		from war_tab a join first_round_players b 
+		on a.allies_match = b.context_data_match_common_matchid_s 
+		where b.disconnect_reason_s like 'EXE_DISCONNECTED%%'
+		union all 
+		select c.*, d.context_data_players_client_user_id_l, d.disconnect_reason_s
+		from war_tab c join second_round_players d 
+		on c.axis_match = d.context_data_match_common_matchid_s 
+		where (d.disconnect_reason_s like 'EXE_DISCONNECTED%%' or d.disconnect_reason_s in ('EXE_MATCHENDED'))
+		) e 
+),
 
- , case when title_id in ('5598') then 'XBOX'
+agg_war_match_disconnects as 
+(
+select raw_date, description, game_type, playlist_id, map_name, count(distinct matchid) as num_matches 
+, sum(duration_total) as match_duration 
+, sum(early_quits) as early_quits 
+, sum(all_quits) as all_quits 
+, sum(users) as users 
+from 
+(
+select dt as raw_date
+		, concat_matchid as matchid 
+        , case when context_headers_title_id_s in ('5599') then 'PS4'
+              when context_headers_title_id_s in ('5598') then 'XBOX'
+              when context_headers_title_id_s in ('5597') then 'PC' end as description 
+			  
+-- All these game types description have to be updated with latest descriptions 
 
-		when title_id in ('5599') then 'PS4' 
+		, case when match_common_gametype_s = 'raid' then 'War'
+		       when match_common_gametype_s = 'raid hc' then 'War Hardcore'
+		else match_common_gametype_s 
+        end as game_type 
 
-		when title_id in ('5597') then 'PC' end as platform
 
-		, weapon_base
+-- Create a separate playlist Id mapping for PC 
 
-		, weapon_class 
-
-		, game_type
-
-		, mmr_tier 
-
-		, prestige 
-
-		, sum(kills) as kills
-
-		, sum(deaths) as deaths
-
-		, sum(duration)/60.0 as duration
-
-		, count(*) as times_used 
-
+, b.playlist_name as playlist_id 
 		
+-- Map Descriptions and their Screen Names 
 
-FROM  
+    ,case when match_common_map_s = 'mp_raid_cobra' then 'Operation Breakout' 
+          when match_common_map_s = 'mp_raid_bulge' then 'Operation Griffin' 	
+          when match_common_map_s = 'mp_raid_aachen' then 'Operation Aachen' 	
+          when match_common_map_s = 'mp_raid_d_day' then 'Operation Neptune' 
+		  when match_common_map_s = 'mp_raid_dlc2' then 'Operation Husky'
+		  
+	      else match_common_map_s 
+	end as map_name 
 
- (
-SELECT DISTINCT a.context_headers_title_id_s as title_id
-        , a.dt 
-        , a.context_data_match_common_matchid_s as match_id
-        , a.loadout_index_i as loadoutid 
-        , a.weapon_guid_l 
-        , d.loot_group as weapon_class
-        , d.reference as weapon_description 
-        , d.weapon_base 
-        , b.match_common_gametype_s game_type 
-        , c.client_gamer_tag_s as gamer_tag
-        , c.mmr_tier as mmr_tier
-        , c.start_prestige_i as prestige
-        , a.kills_i as kills
-        , a.deaths_i as deaths 
-        , a.time_in_use_seconds_i as duration 
-        , a.context_data_players_score_i as score
-        , b.match_common_map_s as map_description
-    from ads_ww2.fact_mp_match_data_players_weaponstats a 
-    join temp_match b 
-    on a.context_data_match_common_matchid_s = b.context_data_match_common_matchid_s 
-    join player_match c 
-    on a.context_data_match_common_matchid_s = c.context_data_match_common_matchid_s 
-    and a.context_data_players_index = c.context_data_players_index 
-    join loot_TABLE d 
-    on a.weapon_guid_l = d.loot_id 
-    where a.dt = date '{{DS_DATE_ADD(0)}}'
-    and a.time_in_use_seconds_i > 0 
-    ) 
-group by 1,2,3,4,5,6,7
-),
+ 	,matchduration/60.0 as duration_total -- Get Match Duration 
+	,count(distinct case when disconnect_reason_s like 'EXE_DISCONNECTED%%' then context_data_players_client_user_id_l end) as early_quits -- Voluntary Quits 
+	,count(distinct case when disconnect_reason_s like 'EXE_DISCONNECTED%%' or disconnect_reason_s in ('EXE_MATCHENDED')  then context_data_players_client_user_id_l end) as all_quits 
+	, count(distinct context_data_players_client_user_id_l) as users 
+	from player_mp a 
+	left join as_s2.s2_playlist_id_to_name_mapping b 
+	ON a.dt = b.dt 
+	AND a.context_data_match_common_playlist_id_i = b.playlist_id 
+	group by 1,2,3,4,5,6,7
+) 
+group by 1,2,3,4,5 
+) ,
 
-cross_TABLE as 
+--select * from agg_war_match_disconnects limit 10
+
+--with 
+war_mode_agg as 
 (
-SELECT * 
-FROM (SELECT DISTINCT mmr_tier from weapon_usage) c1
-CROSS JOIN (SELECT DISTINCT game_type from weapon_usage) c2 
-CROSS JOIN (SELECT DISTINCT platform from weapon_usage) c3
-CROSS JOIN (SELECT DISTINCT raw_date, weapon_base, weapon_class from weapon_usage) c4 
-CROSS JOIN (SELECT DISTINCT prestige from weapon_usage where prestige between 0 and 11) c5
+with temp_lives_war as 
+(
+select distinct victim_user_id 
+, context_headers_title_id_s as title_id 
+, context_data_match_common_map_s as map_description 
+, context_data_match_common_gametype_s as game_type_description 
+, context_data_match_common_matchid_s 
+, context_data_match_common_playlist_id_i as playlist_id
+, context_data_match_common_playlist_name_s 
+, attacker_user_id 
+, death_time_ms_i 
+, spawn_pos_ai 
+, victim_weapon_s 
+, duration_ms_i 
+, dt from 
+ads_ww2.fact_mp_match_data_lives 
+where dt = date '{{DS_DATE_ADD(%s)}}'
+and context_data_match_common_gametype_s in ('raid', 'raid hc')
+and context_data_match_common_is_private_match_b = FALSE 
+and context_headers_title_id_s in ('5597', '5598', '5599')
 )
 
-SELECT d.monday_date as week_start_dt 
-, c.game_type 
-, c.platform 
-, c.weapon_base
-, c.weapon_class 
-, c.mmr_tier 
-, c.prestige 
-, coalesce(a.kills,0) as kills_equipped 
-, coalesce(a.deaths,0) as deaths_equipped 
-, coalesce(a.duration,0) as duration_equipped 
-, coalesce(a.times_used,0) as times_used_equipped
-, coalesce(b.kills,0) as kills_loadout
-, coalesce(b.deaths,0) as deaths_loadout 
-, coalesce(b.duration,0) as duration_loadout 
-, coalesce(b.times_used,0) as times_used_loadout 
-, sum(coalesce(a.kills,0)) over (partition by c.raw_date , c.game_type , c.platform , c.mmr_tier, c.prestige) as kills_total_weapon_name
-, sum(coalesce(a.duration,0)) over (partition by c.raw_date , c.game_type , c.platform , c.mmr_tier, c.prestige) as duration_total_weapon_name 
-, sum(coalesce(b.duration,0)) over (partition by c.raw_date , c.game_type , c.platform , c.mmr_tier, c.prestige) as duration_loadout_total_weapon_name 
-, count(c.weapon_base) over (partition by c.raw_date , c.game_type , c.platform , c.mmr_tier, c.prestige, c.weapon_class) as total_num_weapon_base 
-, c.raw_date 
-from cross_TABLE c
+select case when a.title_id in ('5599') then 'PS4'
+              when a.title_id in ('5598') then 'XBOX'
+              when a.title_id in ('5597') then 'PC' 
+	   end as description 
+,case when a.game_type_description = 'raid' then 'War' 
+            when a.game_type_description = 'raid hc' then 'War Hardcore' 
+			else a.game_type_description 
+       end as game_type
+,case when a.playlist_id = 2 then 'War' 
+	        else cast(a.playlist_id as varchar) 
+       end as playlist_id  
+,case  when a.map_description = 'mp_raid_cobra' then 'Operation Breakout' 
+             when a.map_description = 'mp_raid_bulge' then 'Operation Griffin' 	
+             when a.map_description = 'mp_raid_aachen' then 'Operation Aachen' 	
+             when a.map_description = 'mp_raid_d_day' then 'Operation Neptune' 
+			 when a.map_description = 'mp_raid_dlc2' then 'Operation Husky'
+			 else a.map_description 
+       end as map_name
+, a.raw_date 
+, sum(num_kills) as kills 
+, sum(num_deaths) as deaths 
+from 
+(
+select victim_user_id, title_id, game_type_description, playlist_id, map_description, dt as raw_date, count(*) as num_Deaths 
+from temp_lives_war 
+group by 1,2,3,4,5,6
+) a 
 join 
-
 (
-SELECT raw_date 
-, game_type 
-, case when title_id in ('5598') then 'XBOX' 
-            when title_id in ('5599') then 'PS4' 
-			when title_id in ('5597') then 'PC' end as platform 
-, weapon_base 
-, weapon_class
-, mmr_tier
-, prestige
-, sum(kills) as kills 
-, sum(deaths) as deaths 
-, sum(score) as score 
-, sum(duration)/60.0 as duration 
-, sum(times_used) as times_used  
+select attacker_user_id, title_id, game_type_description, playlist_id, map_description, dt as raw_date, count(*) as num_kills 
+from temp_lives_war 
+group by 1,2,3,4,5,6
+) b 
+on a.victim_user_id = b.attacker_user_id 
+and a.title_id = b.title_id 
+and a.game_type_description = b.game_type_description 
+and a.playlist_id = b.playlist_id 
+and a.map_description = b.map_description 
+and a.raw_date = b.raw_date 
 
-from 
-
-
-(
-(
-SELECT DISTINCT b.context_headers_title_id_s as title_id 
-, b.match_common_map_s as map_description 
-, b.match_common_gametype_s as game_type 
-, a.victim_weapon_s as weapon_name
-, a.attacker_weapon_s as attacker_weapon
-, d.loot_group as weapon_class 
-, d.weapon_base 
-, c.mmr_tier as mmr_tier 
-, c.start_prestige_i as prestige 
-, c.client_gamer_tag_s as gamer_tag
-, a.context_headers_event_id_s 
-, a.context_data_match_common_matchid_s
-, a.player_index_i 
-, a.attacker_i 
-, a.spawn_time_ms_i 
-, a.duration_ms_i 
-, a.score_earned_i as score 
-, (a.death_time_ms_i - a.spawn_time_ms_i)/1000.0 as duration 
-, b.match_common_utc_start_time_i 
-, 0 as kills 
-, 1 as deaths 
-, 1 as times_used 
-, a.dt as raw_date 
-from ads_ww2.fact_mp_match_data_lives a 
-
-join temp_match b 
-	
-on a.context_headers_event_id_s = b.context_headers_event_id_s 
-and a.context_data_match_common_matchid_s = b.context_data_match_common_matchid_s 
-
-join player_match c 
-
-on a.context_data_match_common_matchid_s = c.context_data_match_common_matchid_s
-and a.player_index_i = c.context_data_players_index
-
-left join loot_TABLE d -- Weapon Description Mapping 
-on a.victim_weapon_guid_l = d.loot_id
-
--- Lives Data Filters 
-where a.dt = date '{{DS_DATE_ADD(0)}}'
-and a.duration_ms_i > 0 
---and (a.spawn_pos_ai[1] > 0 or a.spawn_pos_ai[2] > 0 or a.spawn_pos_ai[3] > 0) 
-and a.means_of_death_s <> 'none' 
-and a.victim_weapon_s <> 'none' 
-
-
-) 
-
-union all
-
-
-( 
-SELECT DISTINCT b.context_headers_title_id_s as title_id 
-, b.match_common_map_s as map_description 
-, b.match_common_gametype_s as game_type 
-, a.attacker_weapon_s as weapon_name
-, a.victim_weapon_s as victim_weapon
-, d.loot_group as weapon_class 
-, d.weapon_base 
-, c.mmr_tier as mmr_tier 
-, c.start_prestige_i as prestige 
-, c.client_gamer_tag_s as gamer_tag
-, a.context_headers_event_id_s 
-, a.context_data_match_common_matchid_s
-, a.player_index_i 
-, a.attacker_i 
-, a.spawn_time_ms_i 
-, a.duration_ms_i 
-, 0 as score 
-, 0.0 as duration 
-, b.match_common_utc_start_time_i 
-, 1 as kills 
-, 0 as deaths 
-, 0 as times_used 
-, a.dt as raw_date 
-from ads_ww2.fact_mp_match_data_lives a 
-
-join temp_match b 
-	
-on a.context_headers_event_id_s = b.context_headers_event_id_s 
-and a.context_data_match_common_matchid_s = b.context_data_match_common_matchid_s 
-
-join player_match c 
-
-on a.context_data_match_common_matchid_s = c.context_data_match_common_matchid_s
-and a.attacker_i = c.context_data_players_index
-
-left join loot_TABLE d -- Weapon Description Mapping TABLE 
-on a.attacker_weapon_guid_l = d.loot_id
-
--- Lives Data Filters 
-where a.dt = date '{{DS_DATE_ADD(0)}}'
-and a.duration_ms_i > 0 
---and (a.spawn_pos_ai[1] > 0 or a.spawn_pos_ai[2] > 0 or a.spawn_pos_ai[3] > 0) 
-and a.means_of_death_s <> 'none' 
-and a.attacker_weapon_s <> 'none' 
-
-)  
+group by 1,2,3,4,5
 )
-group by 1,2,3,4,5,6,7
-) a 
-on c.raw_date = a.raw_date 
-and c.game_type = a.game_type 
-and c.platform = a.platform 
-and c.weapon_base = a.weapon_base 
-and c.weapon_class = a.weapon_class 
-and c.mmr_tier = a.mmr_tier 
-and c.prestige = a.prestige 
 
-left join weapon_usage b 
-
-on c.raw_date = b.raw_date 
-and c.game_type = b.game_type 
-and c.platform = b.platform 
-and c.weapon_base = b.weapon_base 
-and c.weapon_class = b.weapon_class 
-and c.mmr_tier = b.mmr_tier 
-and c.prestige = b.prestige 
-
-left join as_shared.dim_date_id_date_monday_dev d 
-on c.raw_date = d.raw_date '''
-
-insert_weapon_usage_ranked_play_mmr_task = qubole_operator('insert_daily_weapons_usage_ranked_play_mmr_task',
-                                              insert_weapon_usage_ranked_play_start_mmr_sql, 2, timedelta(seconds=600), dag)
-
-insert_weapon_usage_mlg_gamebattle_sql = '''insert overwrite as_s2.s2_weapon_usage_dashboard_mlg
-with temp_match as 
-(   
-    select distinct context_headers_title_id_s, context_data_match_common_matchid_s, match_common_map_s, match_common_gametype_s, 
-	context_headers_event_id_s, match_common_utc_start_time_i, match_common_life_count_i,
-	match_common_player_count_i, match_common_has_bots_b 
-	FROM ads_ww2.fact_mp_match_data
-	WHERE dt =  date '{{DS_DATE_ADD(0)}}'
-	and match_common_mlg_gamebattle_active_b= true
-	and context_data_match_common_matchid_s IS NOT NULL
-	AND CONTEXT_HEADERS_TITLE_ID_S IN ('5597','5598','5599')
-	and match_common_is_private_match_b = TRUE
-),
-
-
-player_match as 
+select a.monday_date
+	,a.game_type
+    ,a.platform
+	,a.playlist_id
+	,a.map_name
+	,coalesce(c.num_matches,a.num_matches) as num_matches 
+    ,coalesce(c.users, a.users) as users 
+	,coalesce(b.kills, a.kills) as kills 
+	,coalesce(b.deaths, a.deaths) as deaths
+	,a.score
+	,a.lives_count 
+	,a.life_time
+    ,a.xp
+	,coalesce(c.match_duration, a.match_duration) as match_duration 
+	,a.play_duration
+	,coalesce(c.early_quits, a.early_quits ) as early_quits
+	,coalesce(c.all_quits, a.all_quits ) as all_quits 
+	,a.Date_now
+	,a.now 
+	,a.raw_date 
+	from 
 (
-select distinct context_headers_title_id_s, context_data_match_common_matchid_s, context_data_players_index, client_gamer_tag_s, context_data_players_client_user_id_l, 
+Select d.monday_date
+	,game_type
+    ,description as platform
+	,playlist_id
+	,map_name
+	,count(distinct match_id) as num_matches
+    ,sum(users) as users
+	,sum(kills) as kills
+	,sum(deaths) as deaths
+	,sum(score) as score
+	,sum(lives_count) as lives_count 
+	,sum(life_time)/60.0 as life_time
+    ,sum(xp) as xp
+	,sum(duration_total) as match_duration
+	,sum(play_duration) as play_duration
+	,sum(early_quits) as early_quits 
+	,sum(all_quits) as all_quits 
+	,cast((select max(date(from_unixtime(match_common_utc_end_time_i))) from ads_ww2.fact_mp_match_data where date(from_unixtime(match_common_utc_end_time_i)) <= current_date) as date) as Date_now
+	,current_date as now 
+	, d.raw_date
+	from 
+	
+	(
 
- start_rank_i as start_rank
-, start_prestige_i 
-from ads_ww2.fact_mp_match_data_players 
-where dt = date '{{DS_DATE_ADD(0)}}'
-and context_data_match_common_matchid_s in (select context_data_match_common_matchid_s from temp_match)
-),
+-- Aggreate data at Match Level 
 
-loot_table as 
-(
-select name, reference, description, rarity, productionlevel, category, rarity_s, loot_id, loot_group , weapon_name as weapon_base 
-from as_s2.loot_v5_ext a 
-where upper(category) = 'WEAPON'
-group by 1,2,3,4,5,6,7,8,9,10
-),
+		select a.dt
+		, a.match_id
+        , case when a.title_id in ('5599') then 'PS4'
+              when a.title_id in ('5598') then 'XBOX'
+              when a.title_id in ('5597') then 'PC' end as description 
+			  
+-- All these game types description have to be updated with latest descriptions 
+
+		, case when game_type_description = 'ctf' then 'Capture The Flag'
+        when game_type_description = 'war' then 'Team Deathmatch'
+        when game_type_description = 'dm hc' then 'Free-for-all Hardcore'
+        when game_type_description = 'hp' then 'Hardpoint' 
+		when game_type_description = 'raid' then 'War'
+		when game_type_description = 'sd' then 'Search and Destroy' 
+		when game_type_description = 'dom' then 'Domination' 
+		when game_type_description = 'conf' then 'Kill Confirmed' 
+		when game_type_description = 'dm' then 'Free-for-all' 
+		when game_type_description = 'ball' then 'Uplink' 
+		when game_type_description = 'dom hc' then 'Domination Hardcore' 
+		when game_type_description = 'war hc' then 'Team Deathmatch Hardcore' 
+		when game_type_description = 'sd hc' then 'Search and Destroy Hardcore' 
+		when game_type_description = 'raid hc' then 'War Hardcore'
+		when game_type_description = 'hp hc' then 'Hardpoint Hardcore' 
+		when game_type_description = 'ctf hc' then 'Capture The Flag Hardcore'
+		when game_type_description = 'conf hc' then 'Kill Confirmed Hardcore' 
+		when game_type_description = 'gun' then 'Gun Game' 
+		else game_type_description 
+        end as game_type 
 
 
-weapon_usage as 
- (
-  select dt as raw_date 
+-- Create a separate playlist Id mapping for PC 
 
- , case when title_id in ('5598') then 'XBOX'
-
-		when title_id in ('5599') then 'PS4' 
-
-		when title_id in ('5597') then 'PC' end as platform
-
-		, regexp_replace(weapon_base, '_mp', '') as weapon_base
-
-		, weapon_class 
-
-		, game_type
-
-		, start_rank 
-
-		, prestige 
-
-		, sum(kills) as kills
-
-		, sum(deaths) as deaths
-
-		, sum(duration)/60.0 as duration
-
-		, count(*) as times_used 
-
+, case  when playlist_id = 30 then 'Team Deathmatch Hardcore' 
+		when playlist_id = 31 then 'Search and Destroy Hardcore' 
+		when playlist_id = 32 then 'Domination Hardcore' 
+		when playlist_id = 33 then 'Free-for-all Hardcore' 
+		when playlist_id = 34 then 'Kill Confirmed Hardcore'
+		else c.playlist_name  
+     end as playlist_id 
 		
+-- Map Descriptions and their Screen Names 
 
-FROM  
+    ,case when a.map_description = 'mp_d_day' then 'Point Du Hoc' 
+	      when a.map_description = 'mp_gibraltar_02' then 'Gibraltar' 
+	      when a.map_description = 'mp_forest_01' then 'Ardennes Forest' 
+	      when a.map_description = 'mp_aachen_v2' then 'Aachen' 
+	      when a.map_description = 'mp_carentan_s2' then 'Carentan'
+	      when a.map_description = 'mp_wolfslair' then 'Wolf''s Lair'
+	      when a.map_description = 'mp_burn_ss' then 'U-Turn'
+	      when a.map_description = 'mp_flak_tower' then 'Flaktower'
+	      when a.map_description = 'mp_france_village' then 'Sainte Marie du Mont' 
+	      when a.map_description = 'mp_canon_farm' then 'Gustav Canon'
+	      when a.map_description = 'mp_battleship_2' then 'USS Texas'
+	      when a.map_description = 'mp_london' then 'London Docks'
+	      when a.map_description = 'mp_paris' then 'Paris' 
+		  when a.map_description = 'mp_raid_cobra' then 'Operation Breakout' 
+          when a.map_description = 'mp_raid_bulge' then 'Operation Griffin' 	
+          when a.map_description = 'mp_raid_aachen' then 'Operation Aachen' 	
+          when a.map_description = 'mp_raid_d_day' then 'Operation Neptune' 	
+		  when a.map_description = 'mp_carentan_s2_winter' then 'Winter Carentan' 	
+		  
+		  -- DLC2 Maps 
+		  
+		  when a.map_description = 'mp_egypt_02' then 'Egypt'
+		  when a.map_description = 'mp_dunkirk' then 'Dunkirk' 
+		  when a.map_description = 'mp_v2_rocket_02' then 'V2' 
+	      else a.map_description 
+	end as map_name 
 
- (
-select distinct a.context_headers_title_id_s as title_id
-        , a.dt 
-        , a.context_data_match_common_matchid_s as match_id
-        , a.loadout_index_i as loadoutid 
-        , a.weapon_guid_l 
-        , d.loot_group as weapon_class
-        , d.reference as weapon_description 
-        , d.weapon_base 
-        , b.match_common_gametype_s game_type 
-        , c.client_gamer_tag_s as gamer_tag
-        , c.start_rank as start_rank
-        , c.start_prestige_i as prestige
-        , a.kills_i as kills
-        , a.deaths_i as deaths 
-        , a.time_in_use_seconds_i as duration 
-        , a.context_data_players_score_i as score
-        , b.match_common_map_s as map_description
-    from ads_ww2.fact_mp_match_data_players_weaponstats a 
-    join temp_match b 
-    on a.context_data_match_common_matchid_s = b.context_data_match_common_matchid_s 
-    join player_match c 
-    on a.context_data_match_common_matchid_s = c.context_data_match_common_matchid_s 
-    and a.context_data_players_index = c.context_data_players_index 
-    join loot_table d 
-    on a.weapon_guid_l = d.loot_id 
-    where a.dt = date '{{DS_DATE_ADD(0)}}'
-    and a.time_in_use_seconds_i > 0 
-    ) 
-group by 1,2,3,4,5,6,7
-),
+ 	,matchduration/60.0 as duration_total -- Get Match Duration 
+	,sum(lives_count) as lives_count -- Total number of Spawns in the game 
+	,count(distinct case when disconnect_reason_s like 'EXE_DISCONNECTED%%' then a.context_data_players_client_user_id_l end) as early_quits -- Voluntary Quits 
+	,count(distinct case when disconnect_reason_s like 'EXE_DISCONNECTED%%' or disconnect_reason_s in ('EXE_MATCHENDED')  then a.context_data_players_client_user_id_l end) as all_quits -- Voluntary Quits + Match Ended -- SV_MatchEnd, EXE_MATCHENDED
+	,sum(kills) as kills 
+	,sum(deaths) as deaths
+    ,count(distinct a.context_data_players_client_user_id_l) as users 
+	,sum(score) as score 
+    ,sum(playermatchtime_total_ms_i)/1000 as life_time -- Explore the sanity of playermatchtime_total_i, (Seems Faulty), Excluding it from the analysis for now 
+	,sum(total_xp) as xp 
 
-cross_table as 
-(
-select * 
-FROM (select distinct start_rank from weapon_usage where start_rank between 0 and 54) c1
-CROSS JOIN (select distinct game_type from weapon_usage) c2 
-CROSS JOIN (select distinct platform from weapon_usage) c3
-CROSS JOIN (SELECT distinct raw_date, weapon_base, weapon_class from weapon_usage) c4 
-CROSS JOIN (select distinct prestige from weapon_usage where prestige between 0 and 11) c5
-)
-
-select d.monday_date as week_start_dt 
-, c.game_type 
-, c.platform 
-, c.weapon_base
-, c.weapon_class 
-, c.start_rank 
-, c.prestige 
-, coalesce(a.kills,0) as kills_equipped 
-, coalesce(a.deaths,0) as deaths_equipped 
-, coalesce(a.duration,0) as duration_equipped 
-, coalesce(a.times_used,0) as times_used_equipped
-, coalesce(b.kills,0) as kills_loadout
-, coalesce(b.deaths,0) as deaths_loadout 
-, coalesce(b.duration,0) as duration_loadout 
-, coalesce(b.times_used,0) as times_used_loadout 
-, sum(coalesce(a.kills,0)) over (partition by c.raw_date , c.game_type , c.platform , c.start_rank, c.prestige) as kills_total_weapon_name
-, sum(coalesce(a.duration,0)) over (partition by c.raw_date , c.game_type , c.platform , c.start_rank, c.prestige) as duration_total_weapon_name 
-, sum(coalesce(b.duration,0)) over (partition by c.raw_date , c.game_type , c.platform , c.start_rank, c.prestige) as duration_loadout_total_weapon_name 
-, count(c.weapon_base) over (partition by c.raw_date , c.game_type , c.platform , c.start_rank, c.prestige, c.weapon_class) as total_num_weapon_base 
-, c.raw_date 
-from cross_table c
-join 
-
-(
-select raw_date 
-, game_type 
-, case when title_id in ('5598') then 'XBOX' 
-            when title_id in ('5599') then 'PS4' 
-			when title_id in ('5597') then 'PC' end as platform 
-, weapon_base 
-, weapon_class
-, start_rank
-, prestige
-, sum(kills) as kills 
-, sum(deaths) as deaths 
-, sum(score) as score 
-, sum(duration)/60.0 as duration 
-, sum(times_used) as times_used  
-
-from 
-
-
-(
-(
-select distinct b.context_headers_title_id_s as title_id 
-, b.match_common_map_s as map_description 
-, b.match_common_gametype_s as game_type 
-, a.victim_weapon_s as weapon_name
-, a.attacker_weapon_s as attacker_weapon
-, d.loot_group as weapon_class 
-, d.weapon_base 
-, c.start_rank as start_rank 
-, c.start_prestige_i as prestige 
-, c.client_gamer_tag_s as gamer_tag
-, a.context_headers_event_id_s 
-, a.context_data_match_common_matchid_s
-, a.player_index_i 
-, a.attacker_i 
-, a.spawn_time_ms_i 
-, a.duration_ms_i 
-, a.score_earned_i as score 
-, (a.death_time_ms_i - a.spawn_time_ms_i)/1000.0 as duration 
-, b.match_common_utc_start_time_i 
-, 0 as kills 
-, 1 as deaths 
-, 1 as times_used 
-, a.dt as raw_date 
-from ads_ww2.fact_mp_match_data_lives a 
-
-join temp_match b 
-	
-on a.context_headers_event_id_s = b.context_headers_event_id_s 
-and a.context_data_match_common_matchid_s = b.context_data_match_common_matchid_s 
-
-join player_match c 
-
-on a.context_data_match_common_matchid_s = c.context_data_match_common_matchid_s
-and a.player_index_i = c.context_data_players_index
-
-left join loot_table d -- Weapon Description Mapping 
-on a.victim_weapon_guid_l = d.loot_id
-
--- Lives Data Filters 
-where a.dt = date '{{DS_DATE_ADD(0)}}'
-and a.duration_ms_i > 0 
---and (a.spawn_pos_ai[1] > 0 or a.spawn_pos_ai[2] > 0 or a.spawn_pos_ai[3] > 0) 
-and a.means_of_death_s <> 'none' 
-and a.victim_weapon_s <> 'none' 
-
-
-) 
-
-union all
-
-
-( 
-select distinct b.context_headers_title_id_s as title_id 
-, b.match_common_map_s as map_description 
-, b.match_common_gametype_s as game_type 
-, a.attacker_weapon_s as weapon_name
-, a.victim_weapon_s as victim_weapon
-, d.loot_group as weapon_class 
-, d.weapon_base 
-, c.start_rank as start_rank 
-, c.start_prestige_i as prestige 
-, c.client_gamer_tag_s as gamer_tag
-, a.context_headers_event_id_s 
-, a.context_data_match_common_matchid_s
-, a.player_index_i 
-, a.attacker_i 
-, a.spawn_time_ms_i 
-, a.duration_ms_i 
-, 0 as score 
-, 0.0 as duration 
-, b.match_common_utc_start_time_i 
-, 1 as kills 
-, 0 as deaths 
-, 0 as times_used 
-, a.dt as raw_date 
-from ads_ww2.fact_mp_match_data_lives a 
-
-join temp_match b 
-	
-on a.context_headers_event_id_s = b.context_headers_event_id_s 
-and a.context_data_match_common_matchid_s = b.context_data_match_common_matchid_s 
-
-join player_match c 
-
-on a.context_data_match_common_matchid_s = c.context_data_match_common_matchid_s
-and a.attacker_i = c.context_data_players_index
-
-left join loot_table d -- Weapon Description Mapping Table 
-on a.attacker_weapon_guid_l = d.loot_id
-
--- Lives Data Filters 
-where a.dt = date '{{DS_DATE_ADD(0)}}'
-and a.duration_ms_i > 0 
---and (a.spawn_pos_ai[1] > 0 or a.spawn_pos_ai[2] > 0 or a.spawn_pos_ai[3] > 0) 
-and a.means_of_death_s <> 'none' 
-and a.attacker_weapon_s <> 'none' 
-
-)  
-)
-group by 1,2,3,4,5,6,7
+-- Get Play Duration 
+	,sum(play_duration) as play_duration
+	from 
+		( 
+		Select distinct dt 
+			, context_data_players_client_user_id_l 
+			, context_headers_title_id_s as title_id 
+			, context_data_match_common_matchid_s as match_id 
+			, (utc_disconnect_time_s_i - (case when context_data_match_common_utc_start_time_i > utc_connect_time_s_i then context_data_match_common_utc_start_time_i else utc_connect_time_s_i end)) as play_duration
+			, context_data_match_common_utc_start_time_i 
+			, context_data_match_common_utc_end_time_i 
+--			, utc_first_spawn_timestamp 
+            , playermatchtime_total_ms_i 
+--			, playermatchtime_start_i 
+			, utc_connect_time_s_i
+			, disconnect_reason_S 
+			, context_data_match_common_map_s as map_description  
+			, score_i as score  
+			, (end_deaths_i - start_deaths_i) as deaths 
+			, (end_kills_i - start_kills_i) as kills  
+			, (case when spawns_i = 65535 then 0 else spawns_i end) as lives_count 
+			, context_data_match_common_is_private_match_b as private_match_flag 
+			, context_data_match_common_playlist_id_i as playlist_id 
+			, context_data_match_common_playlist_name_s as playlist_name 
+			, total_xp_i as total_xp 
+			, client_is_splitscreen_b as split_screen_flag 
+			FROM ads_ww2.fact_mp_match_data_players 
+			where dt = date '{{DS_DATE_ADD(%s)}}'
+			and (end_kills_i - start_kills_i) >=0 
+			and (end_deaths_i - start_deaths_i) >=0 
+			and score_i between 0 and 15000 
+			and total_xp_i between 0 and 40000 
+                        and utc_connect_time_s_i > 0
+                        and utc_disconnect_time_s_i > 0  
+			and utc_disconnect_time_s_i <= utc_connect_time_s_i + 36000
+			and spawns_i > 0 
+			and context_data_match_common_playlist_id_i <> 0 
+			) a 
+			
+		join 
+		   ( 
+		    select distinct context_headers_title_id_s as title_id
+			 , context_data_match_common_matchid_s 
+			 , match_common_map_s as map_description
+			 , match_common_gametype_s as game_type_description
+			 , context_headers_event_id_s 
+			 , match_common_utc_start_time_i 
+			 , match_common_utc_end_time_i
+			 , match_common_life_count_i 
+			 , match_common_player_count_i 
+			 , match_common_has_bots_b 
+			 , matchduration 
+			 ,dt 
+			 FROM ads_ww2.fact_mp_match_data 
+			 where dt = date '{{DS_DATE_ADD(%s)}}'
+			 and context_data_match_common_matchid_s IS NOT NULL 
+			 AND match_common_is_private_match_b = FALSE 
+			 AND context_headers_title_id_s in ('5597', '5598','5599') 
+			 and matchduration > 0 -- https://api.qubole.com/v2/analyze?command_id=104266516 
+			) b 
+			
+		on a.match_id = b.context_data_match_common_matchid_s 
+		and a.title_id = b.title_id 
+		and a.map_description = b.map_description
+		left join as_s2.s2_playlist_id_to_name_mapping c 
+		ON a.dt = c.dt 
+		AND a.title_id = c.title_id 
+		AND a.playlist_id = c.playlist_id 
+        group by 1,2,3,4,5,6,7 
+		
+		) a
+		left join as_shared.dim_date_id_date_monday_dev d 
+        on a.dt = d.raw_date
+        where playlist_id is not null
+		group by 1,2,3,4,5,20
 ) a 
-on c.raw_date = a.raw_date 
-and c.game_type = a.game_type 
-and c.platform = a.platform 
-and c.weapon_base = a.weapon_base 
-and c.weapon_class = a.weapon_class 
-and c.start_rank = a.start_rank 
-and c.prestige = a.prestige 
+left join war_mode_agg b 
+on a.raw_date = b.raw_date
+and a.platform = b.description 
+and a.game_type = b.game_type 
+and a.playlist_id = b.playlist_id 
+and a.map_name = b.map_name 
 
-left join weapon_usage b 
+left join agg_war_match_disconnects c 
+on a.raw_date = c.raw_date
+and a.platform = c.description 
+and a.game_type = c.game_type 
+and a.playlist_id = c.playlist_id 
+and a.map_name = c.map_name""" 
+##%(stats_date, stats_date, stats_date, stats_date, stats_date) 
 
-on c.raw_date = b.raw_date 
-and c.game_type = b.game_type 
-and c.platform = b.platform 
-and c.weapon_base = b.weapon_base 
-and c.weapon_class = b.weapon_class 
-and c.start_rank = b.start_rank 
-and c.prestige = b.prestige 
+insert_daily_gametype_map_playlist_usage_two_days_task = qubole_operator('daily_gametype_maps_playlist_usage_two_days',
+                                              evaluate_queries(insert_daily_gametype_maps_playlist_usage_sql, -1,5), 2, timedelta(seconds=600), dag) 
+insert_daily_gametype_map_playlist_usage_one_days_task = qubole_operator('daily_gametype_maps_playlist_usage_one_days',
+                                             evaluate_queries(insert_daily_gametype_maps_playlist_usage_sql, 0,5), 2, timedelta(seconds=600), dag) 
 
-left join as_shared.dim_date_id_date_monday_dev d 
-on c.raw_date = d.raw_date'''
+# Wire up the DAG , Setting Dependency of the tasks 
+insert_update_gametype_maps_mapping_task.set_upstream(start_time_task)
+insert_daily_gametype_map_playlist_usage_two_days_task.set_upstream(insert_update_gametype_maps_mapping_task)
+insert_daily_gametype_map_playlist_usage_one_days_task.set_upstream(insert_daily_gametype_map_playlist_usage_two_days_task)
 
-insert_daily_weapons_usage_mlg_gamebattle_task = qubole_operator('insert_daily_weapons_usage_mlg_gamebattle_task',
-                                              insert_weapon_usage_mlg_gamebattle_sql, 2, timedelta(seconds=600), dag) 
-											  
-# Wire up the DAG
-insert_daily_weapons_usage_task.set_upstream(start_time_task)
-insert_daily_weapons_usage_a_day_back_task.set_upstream(insert_daily_weapons_usage_task)
-insert_weapon_usage_ranked_play_mmr_task.set_upstream(insert_daily_weapons_usage_a_day_back_task)
-insert_daily_weapons_usage_mlg_gamebattle_task.set_upstream(insert_weapon_usage_ranked_play_mmr_task)
