@@ -257,8 +257,9 @@ select dt as raw_date
 	, count(distinct context_data_players_client_user_id_l) as users 
 	from player_mp a 
 	left join as_s2.s2_playlist_id_to_name_mapping b 
-	ON a.dt = b.dt 
-	AND a.context_data_match_common_playlist_id_i = b.playlist_id 
+	ON a.dt = b.raw_date 
+    AND a.context_headers_title_id_s = b.title_id
+	AND a.context_data_match_common_playlist_id_i = b.playlist_id
 	group by 1,2,3,4,5,6,7
 ) 
 group by 1,2,3,4,5 
@@ -414,11 +415,11 @@ Select d.monday_date
 
 -- Create a separate playlist Id mapping for PC 
 
-, case  when playlist_id = 30 then 'Team Deathmatch Hardcore' 
-		when playlist_id = 31 then 'Search and Destroy Hardcore' 
-		when playlist_id = 32 then 'Domination Hardcore' 
-		when playlist_id = 33 then 'Free-for-all Hardcore' 
-		when playlist_id = 34 then 'Kill Confirmed Hardcore'
+, case  when a.playlist_id = 30 then 'Team Deathmatch Hardcore' 
+		when a.playlist_id = 31 then 'Search and Destroy Hardcore' 
+		when a.playlist_id = 32 then 'Domination Hardcore' 
+		when a.playlist_id = 33 then 'Free-for-all Hardcore' 
+		when a.playlist_id = 34 then 'Kill Confirmed Hardcore'
 		else c.playlist_name  
      end as playlist_id 
 		
@@ -527,7 +528,7 @@ Select d.monday_date
 		and a.title_id = b.title_id 
 		and a.map_description = b.map_description
 		left join as_s2.s2_playlist_id_to_name_mapping c 
-		ON a.dt = c.dt 
+		ON a.dt = c.raw_date 
 		AND a.title_id = c.title_id 
 		AND a.playlist_id = c.playlist_id 
         group by 1,2,3,4,5,6,7 
